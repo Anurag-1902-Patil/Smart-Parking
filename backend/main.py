@@ -110,8 +110,12 @@ def handle_serial_event(line: str):
         asyncio.run_coroutine_threadsafe(broadcast_serial_event(line), app_loop)
 
 async def broadcast_serial_event(line: str):
-    if "EVENT:GATE_OPENED" in line:
+    if "EVENT:GATE_OPENING" in line:
+        await broadcast_event("gate_opening")
+    elif "EVENT:GATE_OPENED" in line:
         await broadcast_event("gate_opened")
+    elif "EVENT:GATE_CLOSING" in line:
+        await broadcast_event("gate_closing")
     elif "EVENT:GATE_CLOSED" in line:
         await broadcast_event("gate_closed")
     elif "EVENT:BEAM:ENTRY:LOW" in line:

@@ -58,6 +58,7 @@ void setup() {
 
 void openGate() {
   if (!isGateOpen) {
+    Serial.println("EVENT:GATE_OPENING");
     // Slow open (Soft Start)
     for (int pos = ANGLE_CLOSED; pos >= ANGLE_OPEN; pos--) {
       gateServo.write(pos);
@@ -70,6 +71,7 @@ void openGate() {
 
 void closeGate() {
   if (isGateOpen) {
+    Serial.println("EVENT:GATE_CLOSING");
     // Slow close
     for (int pos = ANGLE_OPEN; pos <= ANGLE_CLOSED; pos++) {
       gateServo.write(pos);
