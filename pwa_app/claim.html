@@ -31,12 +31,21 @@
     </style>
 </head>
 
-<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-6 text-center">
+<body
+    class="bg-gray-900 text-white min-h-[100dvh] flex flex-col items-center justify-center p-6 text-center overflow-hidden relative">
+
+    <!-- DEBUG OVERLAY (Mobile Only) -->
+    <div id="debug-overlay"
+        class="absolute top-0 left-0 w-full p-2 bg-black/50 text-[10px] text-left font-mono text-green-400 pointer-events-none z-50">
+        <div id="debug-status">STATUS: INIT</div>
+        <div id="debug-error" class="text-red-400"></div>
+    </div>
 
     <!-- LOADING STATE -->
     <div id="state-loading" class="space-y-6">
         <div class="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
         <h2 class="text-2xl font-semibold animate-pulse">Checking Access...</h2>
+        <p class="text-gray-400 text-sm">Connecting to gate...</p>
     </div>
 
     <!-- ERROR STATE -->
@@ -84,8 +93,6 @@
         </div>
     </div>
 
-    <!-- EXIT CONFIRMATION REMOVED -->
-
     <script>
         const API_BASE = 'http://' + window.location.hostname + ':8000';
         const params = new URLSearchParams(window.location.search);
@@ -97,25 +104,33 @@
             loading: document.getElementById('state-loading'),
             error: document.getElementById('state-error'),
             successEntry: document.getElementById('state-success-entry'),
-            successExit: document.getElementById('state-success-exit'),
-            confirmExit: document.getElementById('state-confirm-exit')
+            successExit: document.getElementById('state-success-exit')
         };
         const errorMsg = document.getElementById('error-msg');
         const slotIdEl = document.getElementById('slot-id');
-        const btnOpenExit = document.getElementById('btn-open-exit');
+
+        // Debug Helper
+        function updateDebug(status, error = "") {
+            document.getElementById('debug-status').textContent = "STATUS: " + status;
+            if (error) document.getElementById('debug-error').textContent = "ERR: " + error;
+        }
 
         function showView(viewName) {
+            updateDebug(viewName.toUpperCase());
             Object.values(views).forEach(el => el.classList.add('hidden'));
             views[viewName].classList.remove('hidden');
             if (navigator.vibrate) navigator.vibrate(50);
         }
 
         async function init() {
-            if (!token) return showError("Invalid QR Code");
+            updateDebug("INIT_START");
+            if (!token) return showError("Invalid QR Code (No Token)");
 
             if (type === 'entry') {
+                updateDebug("ENTRY_FLOW");
                 await handleEntry();
             } else if (type === 'exit') {
+                updateDebug("EXIT_FLOW");
                 await handleExit();
             } else {
                 showError("Unknown QR Type");
@@ -124,6 +139,7 @@
 
         async function handleEntry() {
             try {
+                updateDebug("FETCHING_ENTRY");
                 const res = await fetch(`${API_BASE}/api/claim/entry`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -132,6 +148,7 @@
                 const data = await res.json();
 
                 if (data.ok) {
+                    updateDebug("ENTRY_SUCCESS");
                     slotIdEl.textContent = data.slot;
                     localStorage.setItem('parking_session', data.session);
                     showView('successEntry');
@@ -140,13 +157,13 @@
                     showError(data.reason);
                 }
             } catch (e) {
-                showError("Network Error. Please try again.");
+                showError("Network Error: " + e.message);
             }
         }
 
         async function handleExit() {
             const session = localStorage.getItem('parking_session');
-            if (!session) return showError("No active parking session found on this device.");
+            if (!session) return showError("No active parking session found.");
 
             // Try to claim exit immediately
             await attemptExit(token, session);
@@ -154,6 +171,7 @@
 
         async function attemptExit(token, session) {
             try {
+                updateDebug("FETCHING_EXIT");
                 const res = await fetch(`${API_BASE}/api/claim/exit`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -162,6 +180,7 @@
                 const data = await res.json();
 
                 if (data.ok) {
+                    updateDebug("EXIT_SUCCESS");
                     localStorage.removeItem('parking_session');
                     showView('successExit');
                     if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
@@ -169,18 +188,19 @@
                     showError(data.reason);
                 }
             } catch (e) {
-                showError("Network Error. Please try again.");
+                showError("Network Error: " + e.message);
             }
         }
 
         function showError(msg) {
+            updateDebug("ERROR", msg);
             errorMsg.textContent = msg;
             showView('error');
             if (navigator.vibrate) navigator.vibrate(200);
         }
 
-        // Start
-        setTimeout(init, 500); // Small delay for UX
+        // Start immediately
+        init();
     </script>
 </body>
 
