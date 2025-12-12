@@ -1,24 +1,10 @@
 /*
- * Smart Parking Gate Controller
+ * Smart Parking Gate Controller - Bidirectional State Machine
  * 
  * Hardware Wiring:
- * - IR Entry Sensor: Pin 2 (Input Pullup)
- * - IR Exit Sensor:  Pin 3 (Input Pullup)
+ * - IR Entry Sensor: Pin 2 (Input Pullup, Active LOW)
+ * - IR Exit Sensor:  Pin 3 (Input Pullup, Active LOW)
  * - Servo Motor:     Pin 4
- * 
- * Serial Protocol (9600 baud):
- * PC -> Arduino:
- * - CMD:OPEN\n   : Open gate
- * - CMD:CLOSE\n  : Close gate
- * - CMD:STATUS\n : Request status
- * 
- * Arduino -> PC:
- * - SYSTEM:READY\n         : Boot complete
- * - EVENT:GATE_OPENED\n    : Gate finished opening
- * - EVENT:GATE_CLOSED\n    : Gate finished closing
- * - EVENT:BEAM:ENTRY:LOW\n : Entry beam broken (falling edge)
- * - EVENT:BEAM:EXIT:LOW\n  : Exit beam broken (falling edge)
- * - INFO:GATE:OPEN|CLOSED  : Status response
  */
 
 #include <Servo.h>
@@ -31,13 +17,24 @@ const uint8_t PIN_SERVO    = 4;
 const int ANGLE_OPEN   = 10;
 const int ANGLE_CLOSED = 100;
 
-const unsigned long DEBOUNCE_MS = 100;
-const unsigned long GATE_AUTO_CLOSE_MS = 5000; // Safety auto-close if backend forgets
+const unsigned long DEBOUNCE_MS = 50;
+const unsigned long FAILSAFE_TIMEOUT_MS = 30000; // 30s timeout if car doesn't pass
+
+// --- STATES ---
+enum State {
+  IDLE,
+  GATE_OPEN_ENTRY,      // Gate Open, waiting for car to reach Exit Sensor
+  GATE_PASSING_ENTRY,   // Gate Open, car is blocking Exit Sensor
+  GATE_OPEN_EXIT,       // Gate Open, waiting for car to reach Entry Sensor
+  GATE_PASSING_EXIT     // Gate Open, car is blocking Entry Sensor
+};
+
+State currentState = IDLE;
 
 // --- GLOBALS ---
 Servo gateServo;
 bool isGateOpen = false;
-unsigned long gateOpenTime = 0;
+unsigned long stateStartTime = 0;
 
 // Debounce State
 int lastEntryState = HIGH;
@@ -61,20 +58,19 @@ void setup() {
 
 void openGate() {
   if (!isGateOpen) {
-    // Slow open to prevent brownout (100 -> 10)
+    // Slow open (Soft Start)
     for (int pos = ANGLE_CLOSED; pos >= ANGLE_OPEN; pos--) {
       gateServo.write(pos);
-      delay(15); // 15ms per degree = ~1.35s total
+      delay(15);
     }
     isGateOpen = true;
-    gateOpenTime = millis();
     Serial.println("EVENT:GATE_OPENED");
   }
 }
 
 void closeGate() {
   if (isGateOpen) {
-    // Slow close (10 -> 100)
+    // Slow close
     for (int pos = ANGLE_OPEN; pos <= ANGLE_CLOSED; pos++) {
       gateServo.write(pos);
       delay(15);
@@ -82,7 +78,6 @@ void closeGate() {
     isGateOpen = false;
     Serial.println("EVENT:GATE_CLOSED");
   } else {
-    // Ensure it's physically closed
     gateServo.write(ANGLE_CLOSED);
   }
 }
@@ -112,32 +107,99 @@ void checkSensor(int pin, int &lastState, unsigned long &lastDbTime, int &stable
 void loop() {
   unsigned long now = millis();
 
-  // 1. Handle Serial Commands
+  // 1. Read Sensors
+  checkSensor(PIN_IR_ENTRY, lastEntryState, lastEntryDebounce, stableEntryState, "ENTRY");
+  checkSensor(PIN_IR_EXIT, lastExitState, lastExitDebounce, stableExitState, "EXIT");
+
+  // 2. Handle Serial Commands (Only in IDLE or to force reset)
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
     
     if (cmd == "CMD:OPEN") {
-      openGate();
+      // Decide direction based on which sensor is blocked
+      if (stableEntryState == LOW) {
+        currentState = GATE_OPEN_ENTRY;
+        stateStartTime = now;
+        openGate();
+      } else if (stableExitState == LOW) {
+        currentState = GATE_OPEN_EXIT;
+        stateStartTime = now;
+        openGate();
+      } else {
+        // Fallback: If neither blocked, maybe default to Entry or just Open
+        // For safety, let's default to Entry flow as it's most common
+        currentState = GATE_OPEN_ENTRY;
+        stateStartTime = now;
+        openGate();
+      }
     } else if (cmd == "CMD:CLOSE") {
+      currentState = IDLE;
       closeGate();
     } else if (cmd == "CMD:STATUS") {
       Serial.print("INFO:GATE:");
       Serial.println(isGateOpen ? "OPEN" : "CLOSED");
     } else if (cmd == "CMD:SENSORS") {
       Serial.print("INFO:SENSORS:ENTRY:");
-      Serial.print(digitalRead(PIN_IR_ENTRY) == LOW ? "LOW" : "HIGH");
+      Serial.print(stableEntryState == LOW ? "LOW" : "HIGH");
       Serial.print(":EXIT:");
-      Serial.println(digitalRead(PIN_IR_EXIT) == LOW ? "LOW" : "HIGH");
+      Serial.println(stableExitState == LOW ? "LOW" : "HIGH");
     }
   }
 
-  // 2. Read Sensors
-  checkSensor(PIN_IR_ENTRY, lastEntryState, lastEntryDebounce, stableEntryState, "ENTRY");
-  checkSensor(PIN_IR_EXIT, lastExitState, lastExitDebounce, stableExitState, "EXIT");
+  // 3. State Machine Logic
+  switch (currentState) {
+    case IDLE:
+      // Do nothing, wait for CMD:OPEN
+      break;
 
-  // 3. Safety Auto-Close
-  if (isGateOpen && (now - gateOpenTime > GATE_AUTO_CLOSE_MS)) {
-    closeGate();
+    // --- ENTRY FLOW ---
+    case GATE_OPEN_ENTRY:
+      // Waiting for car to reach Exit Sensor
+      if (stableExitState == LOW) {
+        currentState = GATE_PASSING_ENTRY;
+        stateStartTime = now; // Reset timeout
+      }
+      // Failsafe Timeout
+      if (now - stateStartTime > FAILSAFE_TIMEOUT_MS) {
+        currentState = IDLE;
+        closeGate();
+      }
+      break;
+
+    case GATE_PASSING_ENTRY:
+      // Car is blocking Exit Sensor. Wait for it to clear.
+      if (stableExitState == HIGH) {
+        // Car has cleared!
+        delay(500); // Small buffer
+        currentState = IDLE;
+        closeGate();
+      }
+      // Note: No timeout here. If car is stuck on sensor, gate stays open.
+      break;
+
+    // --- EXIT FLOW ---
+    case GATE_OPEN_EXIT:
+      // Waiting for car to reach Entry Sensor
+      if (stableEntryState == LOW) {
+        currentState = GATE_PASSING_EXIT;
+        stateStartTime = now; // Reset timeout
+      }
+      // Failsafe Timeout
+      if (now - stateStartTime > FAILSAFE_TIMEOUT_MS) {
+        currentState = IDLE;
+        closeGate();
+      }
+      break;
+
+    case GATE_PASSING_EXIT:
+      // Car is blocking Entry Sensor. Wait for it to clear.
+      if (stableEntryState == HIGH) {
+        // Car has cleared!
+        delay(500); // Small buffer
+        currentState = IDLE;
+        closeGate();
+      }
+      break;
   }
 }
