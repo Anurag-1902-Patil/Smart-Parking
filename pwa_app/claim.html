@@ -28,6 +28,13 @@
                 opacity: 1;
             }
         }
+
+        /* Button Disabled State */
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
     </style>
 </head>
 
@@ -38,6 +45,8 @@
     <div id="debug-overlay"
         class="absolute top-0 left-0 w-full p-2 bg-black/50 text-[10px] text-left font-mono text-green-400 pointer-events-none z-50">
         <div id="debug-status">STATUS: INIT</div>
+        <div id="debug-sensor">SENSOR: --</div>
+        <div id="debug-gate">GATE: --</div>
         <div id="debug-error" class="text-red-400"></div>
     </div>
 
@@ -79,22 +88,37 @@
         <p class="text-gray-500 text-sm">Please follow the arrows to your parking spot.</p>
     </div>
 
-    <!-- SUCCESS EXIT STATE -->
-    <div id="state-success-exit" class="hidden space-y-8 animate-pop w-full max-w-sm">
-        <div
-            class="w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg shadow-blue-500/30">
-            👋</div>
+    <!-- EXIT INTENT STATE (NEW) -->
+    <div id="state-exit-intent" class="hidden space-y-8 animate-pop w-full max-w-sm">
+        <div class="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto text-4xl">🚗</div>
         <div>
-            <h1 class="text-4xl font-bold text-white mb-2">Have a safe trip!</h1>
-            <p class="text-blue-400 font-medium text-lg">Gate Opening...</p>
+            <h1 class="text-3xl font-bold text-white mb-2">Exit Parking</h1>
+            <p id="exit-status-text" class="text-gray-400 text-lg">Checking sensors...</p>
         </div>
-        <div class="bg-gray-800/50 rounded-xl p-6">
-            <p class="text-gray-400">Thank you for visiting.</p>
+
+        <button id="btn-open-exit" disabled onclick="attemptExit()"
+            class="w-full bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 text-white font-bold py-6 rounded-2xl text-xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-3">
+            <span>Open Exit Gate</span>
+        </button>
+
+        <p class="text-xs text-gray-500">Button enables when you are at the gate.</p>
+    </div>
+
+    <!-- GATE MONITOR STATE (NEW) -->
+    <div id="state-gate-monitor" class="hidden space-y-8 animate-pop w-full max-w-sm">
+        <div id="gate-monitor-icon"
+            class="w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg shadow-blue-500/30">
+            ⚙️</div>
+        <div>
+            <h1 id="gate-monitor-title" class="text-4xl font-bold text-white mb-2">Gate Opening...</h1>
+            <p id="gate-monitor-sub" class="text-blue-400 font-medium text-lg">Please wait</p>
         </div>
     </div>
 
     <script>
         const API_BASE = 'http://' + window.location.hostname + ':8000';
+        const WS_URL = 'ws://' + window.location.hostname + ':8000/ws/events';
+
         const params = new URLSearchParams(window.location.search);
         const token = params.get('t');
         const type = params.get('type'); // 'entry' or 'exit'
@@ -104,10 +128,25 @@
             loading: document.getElementById('state-loading'),
             error: document.getElementById('state-error'),
             successEntry: document.getElementById('state-success-entry'),
-            successExit: document.getElementById('state-success-exit')
+            exitIntent: document.getElementById('state-exit-intent'),
+            gateMonitor: document.getElementById('state-gate-monitor')
         };
         const errorMsg = document.getElementById('error-msg');
         const slotIdEl = document.getElementById('slot-id');
+
+        // Exit Elements
+        const btnOpenExit = document.getElementById('btn-open-exit');
+        const exitStatusText = document.getElementById('exit-status-text');
+
+        // Gate Monitor Elements
+        const gateTitle = document.getElementById('gate-monitor-title');
+        const gateSub = document.getElementById('gate-monitor-sub');
+        const gateIcon = document.getElementById('gate-monitor-icon');
+
+        // State
+        let socket;
+        let isExitBlocked = false;
+        let currentSession = localStorage.getItem('parking_session');
 
         // Debug Helper
         function updateDebug(status, error = "") {
@@ -124,6 +163,8 @@
 
         async function init() {
             updateDebug("INIT_START");
+            connectWebSocket(); // Start listening immediately
+
             if (!token) return showError("Invalid QR Code (No Token)");
 
             if (type === 'entry') {
@@ -131,9 +172,68 @@
                 await handleEntry();
             } else if (type === 'exit') {
                 updateDebug("EXIT_FLOW");
-                await handleExit();
+                // Don't auto-claim. Show Intent Screen.
+                if (!currentSession) return showError("No active parking session found.");
+                showView('exitIntent');
+                checkSensors(); // Initial check
             } else {
                 showError("Unknown QR Type");
+            }
+        }
+
+        function connectWebSocket() {
+            socket = new WebSocket(WS_URL);
+            socket.onopen = () => updateDebug("WS_CONNECTED");
+            socket.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                handleWsMessage(msg);
+            };
+            socket.onclose = () => setTimeout(connectWebSocket, 3000);
+        }
+
+        function handleWsMessage(msg) {
+            if (msg.type === 'beam_exit') {
+                isExitBlocked = (msg.state === 'blocked');
+                document.getElementById('debug-sensor').textContent = "SENSOR: " + (isExitBlocked ? "BLOCKED" : "CLEAR");
+                updateExitUI();
+            }
+            else if (msg.type === 'gate_opened') {
+                updateGateMonitor("OPEN");
+            }
+            else if (msg.type === 'gate_closing') {
+                updateGateMonitor("CLOSING");
+            }
+            else if (msg.type === 'gate_closed') {
+                updateGateMonitor("CLOSED");
+            }
+        }
+
+        async function checkSensors() {
+            // Fallback initial check via API if WS hasn't sent data yet
+            try {
+                const res = await fetch(`${API_BASE}/api/debug/sensors`);
+                const data = await res.json();
+                isExitBlocked = data.exit;
+                updateExitUI();
+            } catch (e) { }
+        }
+
+        function updateExitUI() {
+            // Only relevant if we are in exit intent mode
+            if (views.exitIntent.classList.contains('hidden')) return;
+
+            if (isExitBlocked) {
+                btnOpenExit.disabled = false;
+                btnOpenExit.classList.remove('bg-gray-700');
+                btnOpenExit.classList.add('bg-amber-600');
+                exitStatusText.textContent = "Ready to Exit";
+                exitStatusText.className = "text-emerald-400 text-lg font-bold";
+            } else {
+                btnOpenExit.disabled = true;
+                btnOpenExit.classList.add('bg-gray-700');
+                btnOpenExit.classList.remove('bg-amber-600');
+                exitStatusText.textContent = "Please drive to the exit gate";
+                exitStatusText.className = "text-amber-400 text-lg animate-pulse";
             }
         }
 
@@ -161,34 +261,72 @@
             }
         }
 
-        async function handleExit() {
-            const session = localStorage.getItem('parking_session');
-            if (!session) return showError("No active parking session found.");
+        // Triggered by Button
+        async function attemptExit() {
+            if (!currentSession) return showError("Session Lost");
 
-            // Try to claim exit immediately
-            await attemptExit(token, session);
-        }
+            // Optimistic UI update
+            showView('gateMonitor');
+            updateGateMonitor("OPENING");
 
-        async function attemptExit(token, session) {
             try {
-                updateDebug("FETCHING_EXIT");
+                updateDebug("SENDING_EXIT");
                 const res = await fetch(`${API_BASE}/api/claim/exit`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token: token, session: session })
+                    body: JSON.stringify({ token: token, session: currentSession })
                 });
                 const data = await res.json();
 
                 if (data.ok) {
-                    updateDebug("EXIT_SUCCESS");
+                    updateDebug("EXIT_ACCEPTED");
                     localStorage.removeItem('parking_session');
-                    showView('successExit');
-                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                    // Stay on Gate Monitor, wait for WS events
                 } else {
                     showError(data.reason);
                 }
             } catch (e) {
                 showError("Network Error: " + e.message);
+            }
+        }
+
+        function updateGateMonitor(state) {
+            document.getElementById('debug-gate').textContent = "GATE: " + state;
+
+            // If we are not already viewing gate monitor (and it's an exit flow), switch to it
+            if (type === 'exit' && views.gateMonitor.classList.contains('hidden') && state !== 'CLOSED') {
+                showView('gateMonitor');
+            }
+
+            if (state === "OPENING") {
+                gateTitle.textContent = "Gate Opening...";
+                gateSub.textContent = "Please wait";
+                gateIcon.textContent = "⚙️";
+                gateIcon.className = "w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg shadow-blue-500/30 animate-spin";
+            }
+            else if (state === "OPEN") {
+                gateTitle.textContent = "Gate Open";
+                gateSub.textContent = "Please Proceed";
+                gateIcon.textContent = "✅";
+                gateIcon.className = "w-24 h-24 bg-emerald-500 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg shadow-emerald-500/30";
+                if (navigator.vibrate) navigator.vibrate(100);
+            }
+            else if (state === "CLOSING") {
+                gateTitle.textContent = "Gate Closing...";
+                gateSub.textContent = "Have a safe trip";
+                gateIcon.textContent = "👋";
+                gateIcon.className = "w-24 h-24 bg-amber-500 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg shadow-amber-500/30";
+            }
+            else if (state === "CLOSED") {
+                gateTitle.textContent = "Exit Complete";
+                gateSub.textContent = "Thank You";
+                gateIcon.textContent = "🏁";
+                gateIcon.className = "w-24 h-24 bg-gray-700 rounded-full flex items-center justify-center mx-auto text-5xl shadow-lg";
+
+                // Reset after delay
+                setTimeout(() => {
+                    window.location.href = 'index.html';
+                }, 3000);
             }
         }
 
