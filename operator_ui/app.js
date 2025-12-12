@@ -8,9 +8,16 @@ let exitTimerInterval;
 
 // DOM Elements
 const slotGrid = document.getElementById('slot-grid');
-const logFeed = document.getElementById('log-feed');
 const freeCountEl = document.getElementById('free-count');
 const totalCountEl = document.getElementById('total-count');
+const occupancyBar = document.getElementById('occupancy-bar');
+const connectionStatus = document.getElementById('connection-status');
+
+const gateIcon = document.getElementById('gate-icon');
+const gateStatusText = document.getElementById('gate-status-text');
+
+const sensorEntry = document.getElementById('sensor-entry');
+const sensorExit = document.getElementById('sensor-exit');
 
 // --- INIT ---
 async function init() {
@@ -32,7 +39,7 @@ async function fetchSlots() {
         slots = data.slots;
         renderSlots(data);
     } catch (e) {
-        log(`Error fetching slots: ${e.message}`, 'error');
+        console.error("Error fetching slots:", e);
     }
 }
 
@@ -40,26 +47,21 @@ async function refreshEntryQR() {
     try {
         const res = await fetch(`${API_BASE}/api/qr/entry`);
         const data = await res.json();
-        // URL for Native Camera Scan
         const host = window.location.host;
         const url = `http://${host}/pwa/claim.html?t=${data.token}&type=entry`;
-
         renderQR('entry-qr', url);
-        startTimer('entry-timer', new Date(data.expires_at));
-    } catch (e) {
-        console.error(e);
-    }
+    } catch (e) { console.error(e); }
 }
 
 async function refreshExitQR() {
     try {
         const res = await fetch(`${API_BASE}/api/qr/exit`);
         const data = await res.json();
-        renderQR('exit-qr', JSON.stringify({ t: data.token, type: 'exit' }));
-        startTimer('exit-timer', new Date(data.expires_at));
-    } catch (e) {
-        console.error(e);
-    }
+        const host = window.location.host;
+        const url = `http://${host}/pwa/claim.html?t=${data.token}&type=exit`;
+        renderQR('exit-qr', url);
+    } catch (e) { console.error(e); }
+
 }
 
 async function resetSlots() {
@@ -70,7 +72,6 @@ async function resetSlots() {
         body: JSON.stringify({ total_slots: 4 })
     });
     fetchSlots();
-    log("Admin reset all slots");
 }
 
 async function controlGate(cmd) {
@@ -80,10 +81,7 @@ async function controlGate(cmd) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ command: cmd })
         });
-        log(`Manual Gate Command: ${cmd.toUpperCase()}`);
-    } catch (e) {
-        log(`Error sending command: ${e.message}`, 'error');
-    }
+    } catch (e) { console.error(e); }
 }
 
 // --- RENDER ---
@@ -91,60 +89,98 @@ function renderSlots(data) {
     freeCountEl.textContent = data.free;
     totalCountEl.textContent = data.total;
 
-    slotGrid.innerHTML = slots.map(slot => `
-        <div class="slot ${slot.status} p-6 rounded-lg text-center border-2 border-gray-700">
-            <div class="text-4xl font-bold mb-2">${slot.id}</div>
-            <div class="uppercase text-sm font-tracking-wider opacity-75">${slot.status}</div>
-            ${slot.session_id ? `<div class="text-xs mt-2 truncate">${slot.session_id}</div>` : ''}
+    // Update Progress Bar
+    const occupied = data.total - data.free;
+    const percentage = (occupied / data.total) * 100;
+    occupancyBar.style.width = `${percentage}%`;
+
+    // Color shift based on occupancy
+    if (percentage < 50) occupancyBar.className = "h-4 rounded-full transition-all duration-500 bg-emerald-500";
+    else if (percentage < 80) occupancyBar.className = "h-4 rounded-full transition-all duration-500 bg-yellow-500";
+    else occupancyBar.className = "h-4 rounded-full transition-all duration-500 bg-rose-500";
+
+    slotGrid.innerHTML = slots.map(slot => {
+        let statusColor = "bg-emerald-500/20 border-emerald-500/50 text-emerald-400";
+        if (slot.status === 'occupied') statusColor = "bg-rose-500/20 border-rose-500/50 text-rose-400";
+        if (slot.status === 'reserved') statusColor = "bg-yellow-500/20 border-yellow-500/50 text-yellow-400";
+
+        return `
+        <div class="slot-card ${statusColor} border rounded-xl p-4 flex flex-col items-center justify-center min-h-[100px]">
+            <div class="text-3xl font-bold mb-1">${slot.id}</div>
+            <div class="text-xs font-bold uppercase tracking-wider opacity-80">${slot.status}</div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function renderQR(elementId, text) {
     const el = document.getElementById(elementId);
     el.innerHTML = '';
-    new QRCode(el, {
-        text: text,
-        width: 160,
-        height: 160
-    });
+    new QRCode(el, { text: text, width: 128, height: 128 });
 }
 
-function startTimer(elementId, expiry) {
-    const el = document.getElementById(elementId);
-    // Simple countdown visual
-    el.textContent = `Expires: ${expiry.toLocaleTimeString()}`;
+// --- UI UPDATES ---
+function updateGateStatus(isOpen) {
+    if (isOpen) {
+        gateIcon.textContent = "🔓";
+        gateStatusText.textContent = "OPEN";
+        gateStatusText.className = "text-2xl font-bold text-emerald-400";
+    } else {
+        gateIcon.textContent = "🚧";
+        gateStatusText.textContent = "CLOSED";
+        gateStatusText.className = "text-2xl font-bold text-rose-400";
+    }
 }
 
-function log(msg, type = 'info') {
-    const div = document.createElement('div');
-    const time = new Date().toLocaleTimeString();
-    div.className = `p-2 border-l-2 ${type === 'error' ? 'border-red-500 bg-red-900/20' : 'border-blue-500 bg-blue-900/20'}`;
-    div.innerHTML = `<span class="opacity-50">[${time}]</span> ${msg}`;
-    logFeed.prepend(div);
+function updateSensorStatus(type, isBlocked) {
+    const el = type === 'entry' ? sensorEntry : sensorExit;
+    if (isBlocked) {
+        el.innerHTML = `<span class="w-3 h-3 rounded-full bg-rose-500 animate-pulse"></span> <span class="text-rose-400 font-bold">BLOCKED</span>`;
+    } else {
+        el.innerHTML = `<span class="w-3 h-3 rounded-full bg-emerald-500"></span> <span class="text-emerald-400">Clear</span>`;
+    }
+}
+
+function setConnectionStatus(connected) {
+    if (connected) {
+        connectionStatus.className = "flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-900/30 text-emerald-400 text-xs font-medium uppercase tracking-wider";
+        connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Live`;
+    } else {
+        connectionStatus.className = "flex items-center gap-2 px-3 py-1 rounded-full bg-red-900/30 text-red-400 text-xs font-medium uppercase tracking-wider";
+        connectionStatus.innerHTML = `<span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Disconnected`;
+    }
 }
 
 // --- WEBSOCKET ---
 function connectWebSocket() {
     const ws = new WebSocket(WS_URL);
 
-    ws.onopen = () => log("Connected to Backend Events");
+    ws.onopen = () => {
+        setConnectionStatus(true);
+        console.log("Connected to Backend Events");
+    };
+
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         handleEvent(msg);
     };
+
     ws.onclose = () => {
-        log("Disconnected. Reconnecting...", 'error');
+        setConnectionStatus(false);
         setTimeout(connectWebSocket, 3000);
     };
 }
 
 function handleEvent(msg) {
-    log(`Event: ${msg.type} ${JSON.stringify(msg)}`);
+    console.log("Event:", msg);
 
     if (['slot_reserved', 'slot_occupied', 'slot_freed'].includes(msg.type)) {
         fetchSlots();
     }
+    else if (msg.type === 'gate_opened') updateGateStatus(true);
+    else if (msg.type === 'gate_closed') updateGateStatus(false);
+    else if (msg.type === 'beam_entry') updateSensorStatus('entry', msg.state === 'blocked');
+    else if (msg.type === 'beam_exit') updateSensorStatus('exit', msg.state === 'blocked');
 }
 
 init();

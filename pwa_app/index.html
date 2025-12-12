@@ -8,64 +8,86 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 
-        #canvas {
-            width: 100%;
-            border-radius: 1rem;
+        body {
+            font-family: 'Inter', sans-serif;
         }
     </style>
 </head>
 
-<body class="bg-gray-100 min-h-screen flex flex-col">
+<body class="bg-gray-50 min-h-screen flex flex-col">
 
     <!-- HEADER -->
-    <header class="bg-blue-600 text-white p-4 shadow-md">
-        <h1 class="text-xl font-bold text-center">Parking Access</h1>
+    <header class="bg-white border-b border-gray-200 p-4 sticky top-0 z-10">
+        <div class="flex items-center justify-between max-w-md mx-auto">
+            <h1 class="text-lg font-bold text-gray-900">Smart Parking</h1>
+            <div id="status-badge"
+                class="hidden px-2 py-1 bg-emerald-100 text-emerald-700 text-xs font-bold rounded-full uppercase tracking-wide">
+                Parked
+            </div>
+        </div>
     </header>
 
     <!-- MAIN CONTENT -->
-    <main class="flex-1 p-4 flex flex-col items-center justify-center space-y-6">
+    <main class="flex-1 p-6 flex flex-col items-center justify-center max-w-md mx-auto w-full space-y-6">
 
-        <!-- STATE: IDLE (Scan) -->
-        <div id="view-scan" class="w-full max-w-md space-y-4">
-            <div class="bg-white p-4 rounded-xl shadow-lg">
-                <h2 class="text-lg font-semibold mb-2 text-center">Scan QR to Enter/Exit</h2>
-                <div class="relative">
-                    <canvas id="canvas" hidden></canvas>
-                    <div id="camera-placeholder"
-                        class="bg-gray-200 h-64 rounded-lg flex items-center justify-center text-gray-500">
-                        Camera Loading...
+        <!-- VIEW: SCANNER -->
+        <div id="view-scan" class="w-full space-y-6">
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-200">
+                <div class="relative aspect-square bg-gray-900 rounded-xl overflow-hidden mb-4">
+                    <canvas id="canvas" class="w-full h-full object-cover"></canvas>
+                    <div id="camera-loading"
+                        class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+                        Starting Camera...
+                    </div>
+                    <!-- Scan Overlay -->
+                    <div class="absolute inset-0 border-2 border-white/30 m-8 rounded-lg pointer-events-none">
+                        <div class="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-emerald-500 -mt-1 -ml-1">
+                        </div>
+                        <div
+                            class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-500 -mt-1 -mr-1">
+                        </div>
+                        <div
+                            class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-500 -mb-1 -ml-1">
+                        </div>
+                        <div
+                            class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-500 -mb-1 -mr-1">
+                        </div>
                     </div>
                 </div>
-                <p id="scan-status" class="text-center mt-2 text-sm text-gray-500">Point camera at QR code</p>
+                <h2 class="text-xl font-bold text-center text-gray-900 mb-1">Scan to Enter</h2>
+                <p class="text-center text-gray-500 text-sm">Point your camera at the Entry QR code</p>
             </div>
         </div>
 
-        <!-- STATE: PARKED (Session Active) -->
-        <div id="view-parked" class="hidden w-full max-w-md space-y-4">
-            <div class="bg-green-100 border-2 border-green-500 p-6 rounded-xl text-center shadow-lg">
-                <h2 class="text-2xl font-bold text-green-800 mb-2">Access Granted!</h2>
-                <p class="text-lg">Please park in Slot:</p>
-                <div id="assigned-slot" class="text-6xl font-black text-green-600 my-4">--</div>
-                <p class="text-sm text-gray-600 mb-6">Session ID: <span id="session-id" class="font-mono">...</span></p>
-
-                <button onclick="confirmParked()" id="btn-parked"
-                    class="w-full bg-green-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-green-700 active:scale-95 transition">
-                    I'M PARKED
-                </button>
+        <!-- VIEW: PARKED DASHBOARD -->
+        <div id="view-parked" class="hidden w-full space-y-6">
+            <!-- Slot Card -->
+            <div
+                class="bg-emerald-500 rounded-2xl p-8 text-center text-white shadow-lg shadow-emerald-500/20 relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
+                <p class="text-emerald-100 uppercase tracking-widest text-sm font-semibold mb-2 relative z-10">You are
+                    parked in</p>
+                <div id="assigned-slot" class="text-8xl font-black mb-2 relative z-10">--</div>
+                <div class="inline-block px-3 py-1 bg-white/20 rounded-full text-xs font-mono relative z-10">
+                    Session: <span id="session-id">...</span>
+                </div>
             </div>
-        </div>
 
-        <!-- STATE: EXITING -->
-        <div id="view-exit" class="hidden w-full max-w-md space-y-4">
-            <div class="bg-white p-6 rounded-xl shadow-lg text-center">
-                <h2 class="text-xl font-bold mb-4">Ready to Leave?</h2>
-                <button onclick="requestExit()"
-                    class="w-full bg-red-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-red-700">
-                    OPEN GATE & EXIT
+            <!-- Actions -->
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 space-y-4">
+                <h3 class="font-bold text-gray-900">Ready to leave?</h3>
+                <p class="text-gray-500 text-sm">Drive to the exit gate and scan the Exit QR code.</p>
+
+                <button onclick="enableScannerForExit()"
+                    class="w-full bg-gray-900 hover:bg-gray-800 text-white font-bold py-4 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z">
+                        </path>
+                    </svg>
+                    Scan Exit QR
                 </button>
             </div>
         </div>
@@ -73,7 +95,7 @@
     </main>
 
     <script>
-        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000'; // Assumes backend on same IP
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
 
         // State
         let video = document.createElement("video");
@@ -82,18 +104,47 @@
         let scanning = true;
         let currentSession = localStorage.getItem('parking_session');
 
-        // --- INIT ---
+        // DOM
+        const viewScan = document.getElementById('view-scan');
+        const viewParked = document.getElementById('view-parked');
+        const statusBadge = document.getElementById('status-badge');
+        const cameraLoading = document.getElementById('camera-loading');
+
         function init() {
             if (currentSession) {
                 showParkedView(JSON.parse(currentSession));
             } else {
+                startScanner();
+            }
+        }
+
+        function startScanner() {
+            scanning = true;
+            viewScan.classList.remove('hidden');
+            viewParked.classList.add('hidden');
+
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(function (stream) {
+                video.srcObject = stream;
+                video.setAttribute("playsinline", true); // required to tell iOS safari we don't want fullscreen
+                video.play();
+                requestAnimationFrame(tick);
+            });
+        }
+
+        function tick() {
+            if (!scanning) return;
+
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                cameraLoading.classList.add('hidden');
                 canvasElement.height = video.videoHeight;
                 canvasElement.width = video.videoWidth;
                 canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+
                 var imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
                 var code = jsQR(imageData.data, imageData.width, imageData.height, {
                     inversionAttempts: "dontInvert",
                 });
+
                 if (code) {
                     handleScan(code.data);
                 }
@@ -101,152 +152,46 @@
             requestAnimationFrame(tick);
         }
 
-        // --- LOGIC ---
-        async function handleScan(data) {
-            try {
-                scanning = false; // Pause scanning
-                document.getElementById('scan-status').textContent = "Processing...";
+        function handleScan(data) {
+            // Check if it's a URL or JSON
+            // Our QR codes are now URLs: http://host/pwa/claim.html?t=...
+            // Or JSON for Exit (Wait, we changed Exit to URL too!)
 
-                const qrData = JSON.parse(data); // Expecting {t: "token", type: "entry|exit"}
-
-                if (qrData.type === 'entry') {
-                    await claimEntry(qrData.t);
-                } else if (qrData.type === 'exit') {
-                    await claimExit(qrData.t);
-                } else {
-                    alert("Invalid QR Code");
-                    scanning = true;
-                    requestAnimationFrame(tick);
-                }
-            } catch (e) {
-                console.error(e);
-                alert("Scan Error or Invalid QR Format");
-                scanning = true;
-                requestAnimationFrame(tick);
+            // If it's a URL, we just redirect to it!
+            if (data.startsWith('http')) {
+                scanning = false;
+                if (navigator.vibrate) navigator.vibrate(50);
+                window.location.href = data;
+                return;
             }
-        }
 
-        async function claimEntry(token) {
+            // Fallback for old JSON QRs (if any)
             try {
-                const res = await fetch(`${API_BASE}/api/claim/entry`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token: token })
-                });
-                const data = await res.json();
-
-                if (data.ok) {
-                    const session = { id: data.session, slot: data.slot };
-                    localStorage.setItem('parking_session', JSON.stringify(session));
-                    showParkedView(session);
-                } else {
-                    alert(`Entry Failed: ${data.reason}`);
-                    scanning = true;
-                    requestAnimationFrame(tick);
+                const qrData = JSON.parse(data);
+                if (qrData.t) {
+                    scanning = false;
+                    window.location.href = `claim.html?t=${qrData.t}&type=${qrData.type || 'entry'}`;
                 }
             } catch (e) {
-                alert("Network Error");
-                scanning = true;
-                requestAnimationFrame(tick);
+                // Ignore non-JSON garbage
             }
         }
 
         function showParkedView(session) {
             scanning = false;
-            document.getElementById('view-scan').classList.add('hidden');
-            document.getElementById('view-parked').classList.remove('hidden');
+            viewScan.classList.add('hidden');
+            viewParked.classList.remove('hidden');
+            statusBadge.classList.remove('hidden');
+
             document.getElementById('assigned-slot').textContent = session.slot;
-            document.getElementById('session-id').textContent = session.id.substring(0, 8) + '...';
-
-            // If already confirmed, show exit view? 
-            // For simplicity, we stay on "Parked" until they want to exit.
-            // Let's add an "Exit" button to the parked view or switch views.
-            // Spec says: "supports Exit flow (scan exit QR or press Exit if authenticated)"
-
-            // Let's just append the exit button logic here for simplicity
-            const btn = document.getElementById('btn-parked');
-            if (localStorage.getItem('parked_confirmed')) {
-                btn.textContent = "LEAVE / EXIT";
-                btn.onclick = () => {
-                    document.getElementById('view-parked').classList.add('hidden');
-                    document.getElementById('view-exit').classList.remove('hidden');
-                };
-                btn.className = "w-full bg-red-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-red-700";
-            }
+            document.getElementById('session-id').textContent = session.id.substring(0, 8);
         }
 
-        async function confirmParked() {
-            const session = JSON.parse(localStorage.getItem('parking_session'));
-            if (!session) return;
-
-            try {
-                await fetch(`${API_BASE}/api/session/${session.id}/confirm_parked`, { method: 'POST' });
-                localStorage.setItem('parked_confirmed', 'true');
-                alert("Welcome! You are now parked.");
-                showParkedView(session); // Refresh UI state
-            } catch (e) {
-                alert("Error confirming parking");
-            }
-        }
-
-        async function requestExit() {
-            const session = JSON.parse(localStorage.getItem('parking_session'));
-            if (!session) return;
-
-            try {
-                const res = await fetch(`${API_BASE}/api/claim/exit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session: session.id })
-                });
-                const data = await res.json();
-
-                if (data.ok) {
-                    alert("Gate Opening! Have a safe trip.");
-                    localStorage.removeItem('parking_session');
-                    localStorage.removeItem('parked_confirmed');
-                    location.reload();
-                } else {
-                    alert(`Exit Failed: ${data.reason}`);
-                }
-            } catch (e) {
-                alert("Network Error");
-            }
-        }
-
-        async function claimExit(token) {
-            // Scanned Exit QR
-            const session = JSON.parse(localStorage.getItem('parking_session'));
-            if (!session) {
-                alert("No active session found on device!");
-                scanning = true;
-                requestAnimationFrame(tick);
-                return;
-            }
-
-            try {
-                const res = await fetch(`${API_BASE}/api/claim/exit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session: session.id, token: token })
-                });
-                const data = await res.json();
-
-                if (data.ok) {
-                    alert("Gate Opening! Have a safe trip.");
-                    localStorage.removeItem('parking_session');
-                    localStorage.removeItem('parked_confirmed');
-                    location.reload();
-                } else {
-                    alert(`Exit Failed: ${data.reason}`);
-                    scanning = true;
-                    requestAnimationFrame(tick);
-                }
-            } catch (e) {
-                alert("Network Error");
-                scanning = true;
-                requestAnimationFrame(tick);
-            }
+        function enableScannerForExit() {
+            // Just switch to scanner view, but keep session state
+            // When they scan Exit QR, it will redirect to claim.html?type=exit
+            // claim.html will handle the exit logic using the session in localStorage
+            startScanner();
         }
 
         init();
