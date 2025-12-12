@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Parking Operator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        .slot {
+            transition: all 0.3s;
+        }
+
+        .slot.free {
+            background-color: #10B981;
+        }
+
+        .slot.reserved {
+            background-color: #F59E0B;
+        }
+
+        .slot.occupied {
+            background-color: #EF4444;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-white min-h-screen p-8">
+
+    <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+        <!-- LEFT: QR Codes -->
+        <div class="space-y-8">
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg text-center">
+                <h2 class="text-2xl font-bold mb-4 text-green-400">ENTRY QR</h2>
+                <div id="entry-qr" class="bg-white p-4 mx-auto w-48 h-48 flex items-center justify-center"></div>
+                <p id="entry-timer" class="mt-2 text-gray-400 text-sm">Expires in: --</p>
+            </div>
+
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg text-center">
+                <h2 class="text-2xl font-bold mb-4 text-red-400">EXIT QR</h2>
+                <div id="exit-qr" class="bg-white p-4 mx-auto w-48 h-48 flex items-center justify-center"></div>
+                <p id="exit-timer" class="mt-2 text-gray-400 text-sm">Expires in: --</p>
+            </div>
+        </div>
+
+        <!-- CENTER: Occupancy Grid -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold">Occupancy</h2>
+                <div class="text-xl">
+                    <span id="free-count" class="text-green-400 font-bold">0</span> Free /
+                    <span id="total-count">0</span> Total
+                </div>
+            </div>
+
+            <div id="slot-grid" class="grid grid-cols-2 gap-4">
+                <!-- Slots injected here -->
+            </div>
+
+            <div class="mt-8 border-t border-gray-700 pt-4">
+                <h3 class="text-lg font-semibold mb-2">Manual Controls</h3>
+                <div class="flex flex-col gap-2">
+                    <div class="flex gap-2">
+                        <button onclick="controlGate('open')"
+                            class="flex-1 bg-green-600 hover:bg-green-700 px-4 py-2 rounded font-bold">OPEN
+                            GATE</button>
+                        <button onclick="controlGate('close')"
+                            class="flex-1 bg-red-600 hover:bg-red-700 px-4 py-2 rounded font-bold">CLOSE GATE</button>
+                    </div>
+                    <button onclick="resetSlots()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">Reset All
+                        Slots</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: Logs -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col h-[80vh]">
+            <h2 class="text-2xl font-bold mb-4">Live Events</h2>
+            <div id="log-feed" class="flex-1 overflow-y-auto space-y-2 font-mono text-sm bg-gray-900 p-4 rounded">
+                <!-- Logs injected here -->
+            </div>
+        </div>
+
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

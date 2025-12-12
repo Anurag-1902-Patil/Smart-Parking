@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Parking App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        #canvas {
+            width: 100%;
+            border-radius: 1rem;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 min-h-screen flex flex-col">
+
+    <!-- HEADER -->
+    <header class="bg-blue-600 text-white p-4 shadow-md">
+        <h1 class="text-xl font-bold text-center">Parking Access</h1>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="flex-1 p-4 flex flex-col items-center justify-center space-y-6">
+
+        <!-- STATE: IDLE (Scan) -->
+        <div id="view-scan" class="w-full max-w-md space-y-4">
+            <div class="bg-white p-4 rounded-xl shadow-lg">
+                <h2 class="text-lg font-semibold mb-2 text-center">Scan QR to Enter/Exit</h2>
+                <div class="relative">
+                    <canvas id="canvas" hidden></canvas>
+                    <div id="camera-placeholder"
+                        class="bg-gray-200 h-64 rounded-lg flex items-center justify-center text-gray-500">
+                        Camera Loading...
+                    </div>
+                </div>
+                <p id="scan-status" class="text-center mt-2 text-sm text-gray-500">Point camera at QR code</p>
+            </div>
+        </div>
+
+        <!-- STATE: PARKED (Session Active) -->
+        <div id="view-parked" class="hidden w-full max-w-md space-y-4">
+            <div class="bg-green-100 border-2 border-green-500 p-6 rounded-xl text-center shadow-lg">
+                <h2 class="text-2xl font-bold text-green-800 mb-2">Access Granted!</h2>
+                <p class="text-lg">Please park in Slot:</p>
+                <div id="assigned-slot" class="text-6xl font-black text-green-600 my-4">--</div>
+                <p class="text-sm text-gray-600 mb-6">Session ID: <span id="session-id" class="font-mono">...</span></p>
+
+                <button onclick="confirmParked()" id="btn-parked"
+                    class="w-full bg-green-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-green-700 active:scale-95 transition">
+                    I'M PARKED
+                </button>
+            </div>
+        </div>
+
+        <!-- STATE: EXITING -->
+        <div id="view-exit" class="hidden w-full max-w-md space-y-4">
+            <div class="bg-white p-6 rounded-xl shadow-lg text-center">
+                <h2 class="text-xl font-bold mb-4">Ready to Leave?</h2>
+                <button onclick="requestExit()"
+                    class="w-full bg-red-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-red-700">
+                    OPEN GATE & EXIT
+                </button>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000'; // Assumes backend on same IP
+
+        // State
+        let video = document.createElement("video");
+        let canvasElement = document.getElementById("canvas");
+        let canvas = canvasElement.getContext("2d");
+        let scanning = true;
+        let currentSession = localStorage.getItem('parking_session');
+
+        // --- INIT ---
+        function init() {
+            if (currentSession) {
+                showParkedView(JSON.parse(currentSession));
+            } else {
+                canvasElement.height = video.videoHeight;
+                canvasElement.width = video.videoWidth;
+                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+                var imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                var code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "dontInvert",
+                });
+                if (code) {
+                    handleScan(code.data);
+                }
+            }
+            requestAnimationFrame(tick);
+        }
+
+        // --- LOGIC ---
+        async function handleScan(data) {
+            try {
+                scanning = false; // Pause scanning
+                document.getElementById('scan-status').textContent = "Processing...";
+
+                const qrData = JSON.parse(data); // Expecting {t: "token", type: "entry|exit"}
+
+                if (qrData.type === 'entry') {
+                    await claimEntry(qrData.t);
+                } else if (qrData.type === 'exit') {
+                    await claimExit(qrData.t);
+                } else {
+                    alert("Invalid QR Code");
+                    scanning = true;
+                    requestAnimationFrame(tick);
+                }
+            } catch (e) {
+                console.error(e);
+                alert("Scan Error or Invalid QR Format");
+                scanning = true;
+                requestAnimationFrame(tick);
+            }
+        }
+
+        async function claimEntry(token) {
+            try {
+                const res = await fetch(`${API_BASE}/api/claim/entry`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token })
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    const session = { id: data.session, slot: data.slot };
+                    localStorage.setItem('parking_session', JSON.stringify(session));
+                    showParkedView(session);
+                } else {
+                    alert(`Entry Failed: ${data.reason}`);
+                    scanning = true;
+                    requestAnimationFrame(tick);
+                }
+            } catch (e) {
+                alert("Network Error");
+                scanning = true;
+                requestAnimationFrame(tick);
+            }
+        }
+
+        function showParkedView(session) {
+            scanning = false;
+            document.getElementById('view-scan').classList.add('hidden');
+            document.getElementById('view-parked').classList.remove('hidden');
+            document.getElementById('assigned-slot').textContent = session.slot;
+            document.getElementById('session-id').textContent = session.id.substring(0, 8) + '...';
+
+            // If already confirmed, show exit view? 
+            // For simplicity, we stay on "Parked" until they want to exit.
+            // Let's add an "Exit" button to the parked view or switch views.
+            // Spec says: "supports Exit flow (scan exit QR or press Exit if authenticated)"
+
+            // Let's just append the exit button logic here for simplicity
+            const btn = document.getElementById('btn-parked');
+            if (localStorage.getItem('parked_confirmed')) {
+                btn.textContent = "LEAVE / EXIT";
+                btn.onclick = () => {
+                    document.getElementById('view-parked').classList.add('hidden');
+                    document.getElementById('view-exit').classList.remove('hidden');
+                };
+                btn.className = "w-full bg-red-600 text-white text-xl font-bold py-4 rounded-lg shadow-lg hover:bg-red-700";
+            }
+        }
+
+        async function confirmParked() {
+            const session = JSON.parse(localStorage.getItem('parking_session'));
+            if (!session) return;
+
+            try {
+                await fetch(`${API_BASE}/api/session/${session.id}/confirm_parked`, { method: 'POST' });
+                localStorage.setItem('parked_confirmed', 'true');
+                alert("Welcome! You are now parked.");
+                showParkedView(session); // Refresh UI state
+            } catch (e) {
+                alert("Error confirming parking");
+            }
+        }
+
+        async function requestExit() {
+            const session = JSON.parse(localStorage.getItem('parking_session'));
+            if (!session) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/claim/exit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session: session.id })
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    alert("Gate Opening! Have a safe trip.");
+                    localStorage.removeItem('parking_session');
+                    localStorage.removeItem('parked_confirmed');
+                    location.reload();
+                } else {
+                    alert(`Exit Failed: ${data.reason}`);
+                }
+            } catch (e) {
+                alert("Network Error");
+            }
+        }
+
+        async function claimExit(token) {
+            // Scanned Exit QR
+            const session = JSON.parse(localStorage.getItem('parking_session'));
+            if (!session) {
+                alert("No active session found on device!");
+                scanning = true;
+                requestAnimationFrame(tick);
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/claim/exit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session: session.id, token: token })
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    alert("Gate Opening! Have a safe trip.");
+                    localStorage.removeItem('parking_session');
+                    localStorage.removeItem('parked_confirmed');
+                    location.reload();
+                } else {
+                    alert(`Exit Failed: ${data.reason}`);
+                    scanning = true;
+                    requestAnimationFrame(tick);
+                }
+            } catch (e) {
+                alert("Network Error");
+                scanning = true;
+                requestAnimationFrame(tick);
+            }
+        }
+
+        init();
+    </script>
+</body>
+
+</html>
