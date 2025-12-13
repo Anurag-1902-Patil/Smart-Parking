@@ -64,32 +64,17 @@
     <main class="flex-1 p-6 flex flex-col items-center justify-center max-w-md mx-auto w-full space-y-6">
 
         <!-- VIEW: SCANNER -->
-        <div id="view-scan" class="w-full space-y-6">
-            <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-200">
-                <div class="relative aspect-square bg-gray-900 rounded-xl overflow-hidden mb-4">
-                    <canvas id="canvas" class="w-full h-full object-cover"></canvas>
-                    <div id="camera-loading"
-                        class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
-                        Starting Camera...
-                    </div>
-                    <!-- Scan Overlay -->
-                    <div class="absolute inset-0 border-2 border-white/30 m-8 rounded-lg pointer-events-none">
-                        <div class="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-emerald-500 -mt-1 -ml-1">
-                        </div>
-                        <div
-                            class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-500 -mt-1 -mr-1">
-                        </div>
-                        <div
-                            class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-500 -mb-1 -ml-1">
-                        </div>
-                        <div
-                            class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-500 -mb-1 -mr-1">
-                        </div>
-                    </div>
-                </div>
-                <h2 class="text-xl font-bold text-center text-gray-900 mb-1">Scan to Enter</h2>
-                <p class="text-center text-gray-500 text-sm">Point your camera at the Entry QR code</p>
-            </div>
+        <div class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-500 -mt-1 -mr-1">
+        </div>
+        <div class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-500 -mb-1 -ml-1">
+        </div>
+        <div class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-500 -mb-1 -mr-1">
+        </div>
+        </div>
+        </div>
+        <h2 class="text-xl font-bold text-center text-gray-900 mb-1">Scan to Enter</h2>
+        <p class="text-center text-gray-500 text-sm">Point your camera at the Entry QR code</p>
+        </div>
         </div>
 
         <!-- VIEW: PARKED DASHBOARD -->
@@ -183,32 +168,22 @@
         const exitStatusText = document.getElementById('exit-status-text');
 
         function init() {
+            // alert("DEBUG: App Loaded v4");
+            // --- FORCE TEST SESSION (AUTO-LOGIN) ---
+            if (!currentSession) {
+                console.log("Auto-creating test session...");
+                const testSession = JSON.stringify({ id: 'REAL_TEST_SESSION', slot: 1 });
+                localStorage.setItem('parking_session', testSession);
+                currentSession = testSession;
+            }
+            // ---------------------------------------
+
             updateDebug("INIT");
             connectWebSocket();
 
-            // Check for URL params (Direct Entry/Exit)
-            const urlParams = new URLSearchParams(window.location.search);
-            const token = urlParams.get('token');
-
             if (currentSession) {
                 showParkedView(JSON.parse(currentSession));
-            }
-            else if (token) {
-                // Direct Entry via QR
-                console.log("Direct Entry Token:", token);
-                scanning = false; // Disable scanner
-                views.scan.classList.add('hidden'); // Hide scanner immediately
-
-                // Show temporary loading state
-                showError("Processing Entry...");
-                const errDiv = document.getElementById('view-error');
-                errDiv.querySelector('h2').innerText = "Entering...";
-                errDiv.querySelector('h2').className = "text-2xl font-bold text-emerald-600";
-                errDiv.querySelector('div').innerText = "⏳";
-
-                handleEntry(token);
-            }
-            else {
+            } else {
                 startScanner();
             }
         }
@@ -421,9 +396,7 @@
                         exitStatusText.textContent = "Please drive closer to the gate!";
                         exitStatusText.className = "text-red-400 text-lg font-bold animate-bounce";
                     } else {
-                        // Handle both custom 'reason' and FastAPI 'detail'
-                        const errorText = data.reason || data.detail || JSON.stringify(data);
-                        showError(errorText);
+                        showError(data.reason);
                     }
                 }
             } catch (e) {

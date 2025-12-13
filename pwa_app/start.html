@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Parking App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 min-h-[100dvh] flex flex-col">
+
+    <!-- HEADER -->
+    <header class="bg-white border-b border-gray-200 p-4 sticky top-0 z-10">
+        <div class="flex items-center justify-between max-w-md mx-auto">
+            <h1 class="text-lg font-bold text-gray-900">Smart Parking</h1>
+            <div id="status-badge"
+                class="hidden px-2 py-1 bg-emerald-100 text-emerald-700 text-xs font-bold rounded-full uppercase tracking-wide">
+                Parked
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT -->
+    <main class="flex-1 p-6 flex flex-col items-center justify-center max-w-md mx-auto w-full space-y-6">
+
+        <!-- VIEW: SCANNER -->
+        <div id="view-scan" class="w-full space-y-6">
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-200">
+                <div class="relative aspect-square bg-gray-900 rounded-xl overflow-hidden mb-4">
+                    <canvas id="canvas" class="w-full h-full object-cover"></canvas>
+                    <div id="camera-loading"
+                        class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+                        Starting Camera...
+                    </div>
+                    <!-- Scan Overlay -->
+                    <div class="absolute inset-0 border-2 border-white/30 m-8 rounded-lg pointer-events-none">
+                        <div class="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-emerald-500 -mt-1 -ml-1">
+                        </div>
+                        <div
+                            class="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-500 -mt-1 -mr-1">
+                        </div>
+                        <div
+                            class="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-500 -mb-1 -ml-1">
+                        </div>
+                        <div
+                            class="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-500 -mb-1 -mr-1">
+                        </div>
+                    </div>
+                </div>
+                <h2 class="text-xl font-bold text-center text-gray-900 mb-1">Scan to Enter</h2>
+                <p class="text-center text-gray-500 text-sm">Point your camera at the Entry QR code</p>
+            </div>
+        </div>
+
+        <!-- VIEW: PARKED DASHBOARD -->
+        <div id="view-parked" class="hidden w-full space-y-6">
+            <!-- Slot Card -->
+            <div
+                class="bg-emerald-500 rounded-2xl p-8 text-center text-white shadow-lg shadow-emerald-500/20 relative overflow-hidden">
+                <div class="absolute top-0 right-0 p-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
+                <p class="text-emerald-100 uppercase tracking-widest text-sm font-semibold mb-2 relative z-10">You are
+                    parked in</p>
+                <div id="assigned-slot" class="text-8xl font-black mb-2 relative z-10">--</div>
+                <div class="inline-block px-3 py-1 bg-white/20 rounded-full text-xs font-mono relative z-10">
+                    Session: <span id="session-id">...</span>
+                </div>
+            </div>
+            <script>
+                const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
+
+                // State
+                let video = document.createElement("video");
+                let canvasElement = document.getElementById("canvas");
+                let canvas = canvasElement.getContext("2d");
+                let scanning = true;
+                let currentSession = localStorage.getItem('parking_session');
+
+                // DOM
+                const viewScan = document.getElementById('view-scan');
+                const viewParked = document.getElementById('view-parked');
+                const statusBadge = document.getElementById('status-badge');
+                const cameraLoading = document.getElementById('camera-loading');
+
+                function init() {
+                    if (currentSession) {
+                        showParkedView(JSON.parse(currentSession));
+                    } else {
+                        startScanner();
+                    }
+                }
+
+                function startScanner() {
+                    scanning = true;
+                    viewScan.classList.remove('hidden');
+                    viewParked.classList.add('hidden');
+
+                    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(function (stream) {
+                        video.srcObject = stream;
+                        video.setAttribute("playsinline", true); // required to tell iOS safari we don't want fullscreen
+                        video.play();
+                        requestAnimationFrame(tick);
+                    });
+                }
+
+                function tick() {
+                    if (!scanning) return;
+
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        cameraLoading.classList.add('hidden');
+                        canvasElement.height = video.videoHeight;
+                        canvasElement.width = video.videoWidth;
+                        canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+
+                        var imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                        var code = jsQR(imageData.data, imageData.width, imageData.height, {
+                            inversionAttempts: "dontInvert",
+                        });
+
+                        if (code) {
+                            handleScan(code.data);
+                        }
+                    }
+                    requestAnimationFrame(tick);
+                }
+
+                function handleScan(data) {
+                    // Check if it's a URL or JSON
+                    // Our QR codes are now URLs: http://host/pwa/claim.html?t=...
+                    // Or JSON for Exit (Wait, we changed Exit to URL too!)
+
+                    // If it's a URL, we just redirect to it!
+                    if (data.startsWith('http')) {
+                        scanning = false;
+                        if (navigator.vibrate) navigator.vibrate(50);
+                        window.location.href = data;
+                        return;
+                    }
+
+                    // Fallback for old JSON QRs (if any)
+                    try {
+                        const qrData = JSON.parse(data);
+                        if (qrData.t) {
+                            scanning = false;
+                            window.location.href = `claim.html?t=${qrData.t}&type=${qrData.type || 'entry'}`;
+                        }
+                    } catch (e) {
+                        // Ignore non-JSON garbage
+                    }
+                }
+
+                function showParkedView(session) {
+                    scanning = false;
+                    viewScan.classList.add('hidden');
+                    viewParked.classList.remove('hidden');
+                    statusBadge.classList.remove('hidden');
+
+                    // Handle string or object session
+                    let s = session;
+                    if (typeof session === 'string') {
+                        // If it's just an ID string (legacy/test), mock the object
+                        s = { slot: '?', id: session };
+                    }
+
+                    document.getElementById('assigned-slot').textContent = s.slot || '?';
+                    document.getElementById('session-id').textContent = (s.id || '').substring(0, 8);
+                }
+
+                init();
+            </script>
+</body>
+
+</html>

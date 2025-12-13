@@ -25,9 +25,10 @@ serial_bridge = SerialBridge(port=SERIAL_PORT)
 active_websockets: List[WebSocket] = []
 # Sensor State (True = Car Present/Blocked, False = Clear)
 sensor_state = {
-    "entry": False,
-    "exit": False
+    "entry": False
 }
+# Track session currently exiting to defer slot freeing until car passes sensor
+exiting_session_id: Optional[str] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -81,7 +82,6 @@ class ClaimEntryRequest(BaseModel):
     device_id: Optional[str] = None
 
 class ClaimExitRequest(BaseModel):
-    token: Optional[str] = None
     session: Optional[str] = None
 
 class SetSlotsRequest(BaseModel):
@@ -146,6 +146,30 @@ async def broadcast_serial_event(line: str):
             await broadcast_event("beam_exit", {"state": "blocked" if sensor_state["exit"] else "clear"})
         except:
             pass
+            
+    # --- EXIT LOGIC: Defer slot freeing until car clears ENTRY sensor (Outside) ---
+    global exiting_session_id
+    if exiting_session_id:
+        # Car cleared the outer sensor -> Exit Complete
+        if "EVENT:BEAM:ENTRY:HIGH" in line:
+            print(f"DEBUG: Car cleared Entry Sensor. Freeing session {exiting_session_id}")
+            with DbSession(engine) as db:
+                session = db.exec(select(Session).where(Session.id == exiting_session_id)).first()
+                if session:
+                    slot = db.exec(select(Slot).where(Slot.id == session.slot_id)).first()
+                    if slot:
+                        slot.status = "free"
+                        slot.session_id = None
+                        db.add(slot)
+                    
+                    session.is_active = False
+                    session.end_time = datetime.now()
+                    db.add(session)
+                    db.commit()
+                    
+                    await broadcast_event("slot_freed", {"slot": slot.id if slot else 0})
+            
+            exiting_session_id = None
 
 # --- API ---
 
@@ -191,22 +215,14 @@ def get_qr_entry():
     to_del = [k for k, v in pending_tokens.items() if v["expires"] < now]
     for k in to_del: del pending_tokens[k]
     
+    # Get host from request headers if possible, or use a default
+    # For now, we'll just use the path relative to root or a placeholder
     return {
         "token": token,
         "expires_at": expires.isoformat(),
-        "url": f"http://localhost:8000/claim?tk={token}" # Placeholder
+        "url": f"http://10.147.33.253:8000/pwa/index.html?token={token}" 
     }
 
-@app.get("/api/qr/exit", response_model=QREntryResponse)
-def get_qr_exit():
-    token = secrets.token_urlsafe(16)
-    expires = datetime.now() + timedelta(seconds=QR_TOKEN_TTL)
-    pending_tokens[token] = {"expires": expires, "type": "exit"}
-    return {
-        "token": token,
-        "expires_at": expires.isoformat(),
-        "url": f"http://localhost:8000/exit?tk={token}"
-    }
 
 @app.post("/api/claim/entry")
 async def claim_entry(req: ClaimEntryRequest):
@@ -294,10 +310,7 @@ async def confirm_parked(sid: str):
 
 @app.post("/api/claim/exit")
 async def claim_exit(req: ClaimExitRequest):
-    # Either token (scan exit QR) or session (app button)
-    # If token, just validate it allows exit, but we still need to know WHICH session/slot to free.
-    # The spec says: "scan exit QR or press Exit if authenticated".
-    # If scanning exit QR, the phone must send the session_id it holds.
+    # Strict Force-Fix Implementation
     
     if not req.session:
         raise HTTPException(400, "Session ID required")
@@ -307,43 +320,52 @@ async def claim_exit(req: ClaimExitRequest):
         if not session or not session.is_active:
              raise HTTPException(400, "Invalid session")
         
-        # If token provided, validate it
-        if req.token:
-            if req.token not in pending_tokens:
-                 raise HTTPException(400, "Invalid exit token")
-            del pending_tokens[req.token]
 
-        # Check Sensor LIVE
+        # 1. Check Sensor LIVE (Strict)
+        # We use the cached state from the serial bridge which is updated via thread
+        # But for "FORCE" logic, let's get a fresh snapshot if possible, or trust the cache.
+        # The prompt says "Backend re-checks Exit IR = BLOCKED".
+        
         snapshot = serial_bridge.get_sensor_snapshot()
         if not snapshot:
-            return {"ok": False, "reason": "Sensor Check Failed (Timeout)"}
+            return {
+                "ok": False, 
+                "reason": "SENSOR_TIMEOUT", 
+                "gate_state": "CLOSED"
+            }
             
         if not snapshot["exit"]:
-            return {"ok": False, "reason": "Please drive up to the Exit Gate first."}
+            # STRICT REJECTION
+            return {
+                "ok": False, 
+                "reason": "WAIT_AT_GATE", 
+                "gate_state": "CLOSED"
+            }
 
-        # Open Gate
+        # 2. Open Gate
         if not serial_bridge.send_command("CMD:OPEN"):
-            return {"ok": False, "reason": "GATE_OFFLINE"}
+            return {
+                "ok": False, 
+                "reason": "GATE_OFFLINE", 
+                "gate_state": "CLOSED"
+            }
             
-        # Free slot immediately or wait for beam?
-        # Spec: "Backend will mark slot free once it receives confirmation (EVENT:BEAM...) or after successful exit confirmation"
-        # For simplicity in this prototype, let's mark it free here or have a separate confirm endpoint.
-        # Let's auto-free here for simplicity as "Exit confirmation" from app might be this call itself.
+        # 3. Success Logic - DEFERRED
+        # We do NOT free the slot here. We wait for the car to pass the sensor.
+        # Set global state to track this exit
+        global exiting_session_id
+        exiting_session_id = req.session
         
-        slot = db.exec(select(Slot).where(Slot.id == session.slot_id)).first()
-        if slot:
-            slot.status = "free"
-            slot.session_id = None
-            db.add(slot)
+        # We still return OK so the UI shows "Gate Open"
+        # But we don't broadcast slot_freed yet.
         
-        session.is_active = False
-        session.end_time = datetime.now()
-        db.add(session)
-        db.commit()
-        
-        await broadcast_event("slot_freed", {"slot": slot.id if slot else 0})
-        
-        return {"ok": True, "slot": slot.id if slot else 0}
+        return {
+            "ok": True, 
+            "reason": "GATE_OPENED", 
+            "gate_state": "OPEN",
+            "gate_state": "OPEN",
+            "slot": session.slot_id # Return slot ID for UI reference
+        }
 
 @app.get("/api/debug/sensors")
 def debug_sensors():

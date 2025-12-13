@@ -1,5 +1,5 @@
-const API_BASE = 'http://localhost:8000';
-const WS_URL = 'ws://localhost:8000/ws/events';
+const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
+const WS_URL = 'ws://' + window.location.hostname + ':8000/ws/events';
 
 // State
 let slots = [];
@@ -23,12 +23,11 @@ const sensorExit = document.getElementById('sensor-exit');
 async function init() {
     await fetchSlots();
     refreshEntryQR();
-    refreshExitQR();
+    refreshEntryQR();
     connectWebSocket();
 
     // Auto-refresh QRs before they expire (every 80s for 90s TTL)
     setInterval(refreshEntryQR, 80000);
-    setInterval(refreshExitQR, 80000);
 }
 
 // --- API CALLS ---
@@ -53,16 +52,6 @@ async function refreshEntryQR() {
     } catch (e) { console.error(e); }
 }
 
-async function refreshExitQR() {
-    try {
-        const res = await fetch(`${API_BASE}/api/qr/exit`);
-        const data = await res.json();
-        const host = window.location.host;
-        const url = `http://${host}/pwa/claim.html?t=${data.token}&type=exit`;
-        renderQR('exit-qr', url);
-    } catch (e) { console.error(e); }
-
-}
 
 async function resetSlots() {
     if (!confirm("Reset all slots to FREE?")) return;

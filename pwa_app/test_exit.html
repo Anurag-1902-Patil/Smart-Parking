@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EXIT TEST</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background: #f0fdf4;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .btn {
+            background: #d97706;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 20px;
+            border-radius: 10px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+        }
+
+        .btn:disabled {
+            background: #ccc;
+        }
+
+        .status {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card">
+        <h1 class="text-2xl font-bold mb-4 text-emerald-800">🅿️ Parked (Test Mode)</h1>
+        <p class="mb-6 text-gray-600">Session: REAL_TEST_SESSION</p>
+
+        <div id="main-view">
+            <button onclick="startExit()" class="btn">Exit Parking</button>
+        </div>
+
+        <div id="exit-view" class="hidden mt-4">
+            <p id="msg" class="text-lg mb-4">Processing...</p>
+            <button id="gate-btn" onclick="openGate()" disabled class="btn bg-gray-500">Open Gate</button>
+            <p class="text-xs text-gray-500 mt-2">Button enables when sensor is blocked</p>
+        </div>
+
+        <div class="status" id="debug"></div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
+        let isBlocked = false;
+
+        function startExit() {
+            document.getElementById('main-view').classList.add('hidden');
+            document.getElementById('exit-view').classList.remove('hidden');
+            document.getElementById('msg').innerText = "Checking sensors...";
+
+            // Start polling sensors
+            setInterval(checkSensors, 500);
+        }
+
+        async function checkSensors() {
+            try {
+                const res = await fetch(`${API_BASE}/api/debug/sensors`);
+                const data = await res.json();
+
+                document.getElementById('debug').innerText = "Sensor: " + (data.exit ? "BLOCKED" : "CLEAR");
+
+                if (data.exit) {
+                    document.getElementById('gate-btn').disabled = false;
+                    document.getElementById('gate-btn').classList.remove('bg-gray-500');
+                    document.getElementById('gate-btn').classList.add('bg-emerald-600');
+                    document.getElementById('gate-btn').innerText = "OPEN GATE";
+                    document.getElementById('msg').innerText = "Ready to Exit!";
+                } else {
+                    document.getElementById('gate-btn').disabled = true;
+                    document.getElementById('gate-btn').classList.add('bg-gray-500');
+                    document.getElementById('gate-btn').classList.remove('bg-emerald-600');
+                    document.getElementById('gate-btn').innerText = "Drive to Gate";
+                    document.getElementById('msg').innerText = "Please drive to the exit gate";
+                }
+            } catch (e) {
+                document.getElementById('debug').innerText = "Error: " + e.message;
+            }
+        }
+
+        async function openGate() {
+            document.getElementById('gate-btn').innerText = "Opening...";
+            try {
+                const res = await fetch(`${API_BASE}/api/claim/exit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session: 'REAL_TEST_SESSION' })
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    document.getElementById('msg').innerText = "GATE OPEN! Have a safe trip.";
+                    document.getElementById('gate-btn').classList.add('hidden');
+                } else {
+                    // Handle both custom 'reason' and FastAPI 'detail'
+                    const errorText = data.reason || data.detail || JSON.stringify(data);
+                    alert("Error: " + errorText);
+                }
+            } catch (e) {
+                alert("Network Error: " + e.message);
+            }
+        }
+    </script>
+</body>
+
+</html>
