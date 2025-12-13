@@ -165,17 +165,22 @@
             updateDebug("INIT_START");
             connectWebSocket(); // Start listening immediately
 
-            if (!token) return showError("Invalid QR Code (No Token)");
-
             if (type === 'entry') {
+                if (!token) return showError("Invalid QR Code (No Token)");
                 updateDebug("ENTRY_FLOW");
                 await handleEntry();
-            } else if (type === 'exit') {
-                updateDebug("EXIT_FLOW");
+            } else if (type === 'exit_session') {
+                updateDebug("EXIT_SESSION_FLOW");
                 // Don't auto-claim. Show Intent Screen.
                 if (!currentSession) return showError("No active parking session found.");
                 showView('exitIntent');
                 checkSensors(); // Initial check
+            } else if (type === 'exit') {
+                // Legacy QR Exit support
+                updateDebug("EXIT_QR_FLOW");
+                if (!currentSession) return showError("No active parking session found.");
+                showView('exitIntent');
+                checkSensors();
             } else {
                 showError("Unknown QR Type");
             }
@@ -271,10 +276,14 @@
 
             try {
                 updateDebug("SENDING_EXIT");
+
+                const body = { session: currentSession };
+                if (token) body.token = token;
+
                 const res = await fetch(`${API_BASE}/api/claim/exit`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token: token, session: currentSession })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
 
