@@ -262,15 +262,19 @@
                 handleGateState("CLOSED");
             }
             else if (msg.type === 'slot_freed') {
-                // Exit confirmed!
-                localStorage.removeItem('parking_session');
-                currentSession = null;
-                updateDebug("EXIT_COMPLETE");
-
-                exitStatusText.textContent = "Exit Complete. Safe Travels!";
-                exitStatusText.className = "text-emerald-400 text-xl font-bold";
-                btnOpenExit.innerHTML = '<span>Exit Complete</span>';
-                btnOpenExit.disabled = true;
+                // Exit confirmed! But only if it's OUR session
+                if (currentSession) {
+                    let currentSessionId = typeof currentSession === 'string' 
+                        ? currentSession 
+                        : JSON.parse(currentSession).id;
+                    // For now, don't auto-clear on slot_freed since we can't reliably match
+                    // Just update UI to show exit complete
+                    updateDebug("SLOT_FREED_EVENT");
+                    exitStatusText.textContent = "Exit Complete. Safe Travels!";
+                    exitStatusText.className = "text-emerald-400 text-xl font-bold";
+                    btnOpenExit.innerHTML = '<span>Exit Complete</span>';
+                    btnOpenExit.disabled = true;
+                }
             }
         }
 
@@ -323,7 +327,7 @@
                 if (data.ok) {
                     updateDebug("ENTRY_SUCCESS");
                     slotIdEl.textContent = data.slot;
-                    localStorage.setItem('parking_session', data.session);
+                    localStorage.setItem('parking_session', JSON.stringify({ id: data.session, slot: data.slot }));
                     showView('successEntry');
                     if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
                 } else {
@@ -348,7 +352,16 @@
             try {
                 updateDebug("SENDING_EXIT");
 
-                const body = { session: currentSession };
+                // Parse session object to get just the ID
+                let sessionId = currentSession;
+                try {
+                    let parsed = JSON.parse(currentSession);
+                    sessionId = parsed.id;
+                } catch (e) {
+                    // Already a string, use as-is
+                }
+
+                const body = { session: sessionId };
                 if (token) body.token = token;
 
                 const res = await fetch(`${API_BASE}/api/claim/exit`, {

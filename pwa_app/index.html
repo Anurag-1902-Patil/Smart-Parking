@@ -391,9 +391,20 @@
                 return;
             }
 
+            // Check if session exists before attempting exit
+            if (!currentSession) {
+                showError("Session Lost - Please restart the app");
+                return;
+            }
+
             // Exit API Call
-            let s = JSON.parse(currentSession);
-            let sid = typeof s === 'string' ? s : s.id;
+            let sessionId = currentSession;
+            try {
+                let parsed = JSON.parse(currentSession);
+                sessionId = parsed.id || parsed;
+            } catch (e) {
+                // Already a string, use as-is
+            }
 
             lastButtonPress = new Date().toLocaleTimeString();
             updateDebugStrip();
@@ -407,7 +418,7 @@
                 const res = await fetch(`${API_BASE}/api/claim/exit`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session: sid })
+                    body: JSON.stringify({ session: sessionId })
                 });
                 const data = await res.json();
 

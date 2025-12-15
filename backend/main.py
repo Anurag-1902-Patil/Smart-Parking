@@ -27,8 +27,10 @@ active_websockets: List[WebSocket] = []
 sensor_state = {
     "entry": False
 }
-# Track session currently exiting to defer slot freeing until car passes sensor
-exiting_session_id: Optional[str] = None
+# Track the current session exiting (only one car exits at a time due to gate lock)
+current_exiting_session_id: Optional[str] = None
+# Lock to prevent simultaneous gate commands (will be initialized in lifespan)
+gate_command_lock = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,8 +44,9 @@ async def lifespan(app: FastAPI):
                 db.add(Slot(id=i, status="free"))
             db.commit()
             
-    global app_loop
+    global app_loop, gate_command_lock
     app_loop = asyncio.get_running_loop()
+    gate_command_lock = asyncio.Lock()  # Initialize lock in running event loop
     
     serial_bridge.start(handle_serial_event)
     # Wait for Arduino to boot (DTR reset)
@@ -148,28 +151,36 @@ async def broadcast_serial_event(line: str):
             pass
             
     # --- EXIT LOGIC: Defer slot freeing until car clears ENTRY sensor (Outside) ---
-    global exiting_session_id
-    if exiting_session_id:
-        # Car cleared the outer sensor -> Exit Complete
-        if "EVENT:BEAM:ENTRY:HIGH" in line:
-            print(f"DEBUG: Car cleared Entry Sensor. Freeing session {exiting_session_id}")
-            with DbSession(engine) as db:
-                session = db.exec(select(Session).where(Session.id == exiting_session_id)).first()
-                if session:
-                    slot = db.exec(select(Slot).where(Slot.id == session.slot_id)).first()
-                    if slot:
-                        slot.status = "free"
-                        slot.session_id = None
-                        db.add(slot)
-                    
-                    session.is_active = False
-                    session.end_time = datetime.now()
-                    db.add(session)
-                    db.commit()
-                    
-                    await broadcast_event("slot_freed", {"slot": slot.id if slot else 0})
-            
-            exiting_session_id = None
+    global current_exiting_session_id
+    if current_exiting_session_id and "EVENT:BEAM:ENTRY:HIGH" in line:
+        # Car cleared the outer sensor -> Exit Complete for the currently exiting session
+        session_id = current_exiting_session_id
+        print(f"DEBUG: Car cleared Entry Sensor. Freeing session {session_id}")
+        with DbSession(engine) as db:
+            session = db.exec(select(Session).where(Session.id == session_id)).first()
+            print(f"DEBUG: Found session: {session is not None}, session_id: {session_id}")
+            if session:
+                print(f"DEBUG: Session slot_id: {session.slot_id}")
+                slot = db.exec(select(Slot).where(Slot.id == session.slot_id)).first()
+                print(f"DEBUG: Found slot: {slot is not None}")
+                if slot:
+                    print(f"DEBUG: Freeing slot {slot.id}")
+                    slot.status = "free"
+                    slot.session_id = None
+                    db.add(slot)
+                
+                session.is_active = False
+                session.end_time = datetime.now()
+                db.add(session)
+                db.commit()
+                
+                print(f"DEBUG: Broadcasting slot_freed for slot {slot.id if slot else 0}")
+                await broadcast_event("slot_freed", {"slot": slot.id if slot else 0})
+            else:
+                print(f"DEBUG: Session not found!")
+        
+        # Reset for next car
+        current_exiting_session_id = None
 
 # --- API ---
 
@@ -269,19 +280,21 @@ async def claim_entry(req: ClaimEntryRequest):
         # Consume token
         del pending_tokens[req.token]
         
-        # Open Gate
-        if not serial_bridge.send_command("CMD:OPEN"):
-             # Fallback if gate offline, still allow logic but warn?
-             # Spec says return GATE_OFFLINE
-             # But we already reserved... rollback?
-             # For prototype, let's assume we want to proceed but warn.
-             # Actually spec says: respond {ok:false, reason:"GATE_OFFLINE"}
-             # So we should rollback.
-             slot.status = "free"
-             slot.session_id = None
-             db.delete(new_session)
-             db.commit()
-             return {"ok": False, "reason": "GATE_OFFLINE"}
+        # Open Gate with lock to prevent simultaneous commands
+        global gate_command_lock
+        async with gate_command_lock:
+            if not serial_bridge.send_command("CMD:OPEN"):
+                 # Fallback if gate offline, still allow logic but warn?
+                 # Spec says return GATE_OFFLINE
+                 # But we already reserved... rollback?
+                 # For prototype, let's assume we want to proceed but warn.
+                 # Actually spec says: respond {ok:false, reason:"GATE_OFFLINE"}
+                 # So we should rollback.
+                 slot.status = "free"
+                 slot.session_id = None
+                 db.delete(new_session)
+                 db.commit()
+                 return {"ok": False, "reason": "GATE_OFFLINE"}
 
         await broadcast_event("slot_reserved", {"slot": slot.id, "session": session_id})
         
@@ -317,9 +330,10 @@ async def claim_exit(req: ClaimExitRequest):
 
     with DbSession(engine) as db:
         session = db.exec(select(Session).where(Session.id == req.session)).first()
-        if not session or not session.is_active:
-             raise HTTPException(400, "Invalid session")
+        if not session:
+             raise HTTPException(400, "Session not found")
         
+        print(f"DEBUG: Exit request for session {req.session}, is_active={session.is_active}")
 
         # 1. Check Sensor LIVE (Strict)
         # We use the cached state from the serial bridge which is updated via thread
@@ -328,6 +342,7 @@ async def claim_exit(req: ClaimExitRequest):
         
         snapshot = serial_bridge.get_sensor_snapshot()
         if not snapshot:
+            print(f"DEBUG: Sensor snapshot timeout for session {req.session}")
             return {
                 "ok": False, 
                 "reason": "SENSOR_TIMEOUT", 
@@ -336,25 +351,35 @@ async def claim_exit(req: ClaimExitRequest):
             
         if not snapshot["exit"]:
             # STRICT REJECTION
+            print(f"DEBUG: Exit sensor not blocked for session {req.session}")
             return {
                 "ok": False, 
                 "reason": "WAIT_AT_GATE", 
                 "gate_state": "CLOSED"
             }
 
-        # 2. Open Gate
-        if not serial_bridge.send_command("CMD:OPEN"):
-            return {
-                "ok": False, 
-                "reason": "GATE_OFFLINE", 
-                "gate_state": "CLOSED"
-            }
+        # 2. Open Gate with lock to prevent simultaneous commands
+        global gate_command_lock
+        print(f"DEBUG: Attempting to open gate for session {req.session}")
+        async with gate_command_lock:
+            print(f"DEBUG: Gate lock acquired for session {req.session}")
+            gate_result = serial_bridge.send_command("CMD:OPEN")
+            print(f"DEBUG: Gate command result for session {req.session}: {gate_result}")
+            if not gate_result:
+                print(f"DEBUG: Gate command FAILED for session {req.session}")
+                return {
+                    "ok": False, 
+                    "reason": "GATE_OFFLINE", 
+                    "gate_state": "CLOSED"
+                }
             
         # 3. Success Logic - DEFERRED
         # We do NOT free the slot here. We wait for the car to pass the sensor.
-        # Set global state to track this exit
-        global exiting_session_id
-        exiting_session_id = req.session
+        # Set the current exiting session (gate lock ensures only one at a time)
+        global current_exiting_session_id
+        print(f"DEBUG: Setting current_exiting_session_id = {req.session}")
+        current_exiting_session_id = req.session
+        print(f"DEBUG: Exit success for session {req.session}, returning OK")
         
         # We still return OK so the UI shows "Gate Open"
         # But we don't broadcast slot_freed yet.

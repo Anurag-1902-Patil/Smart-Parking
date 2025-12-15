@@ -165,6 +165,10 @@ function handleEvent(msg) {
 
     if (['slot_reserved', 'slot_occupied', 'slot_freed'].includes(msg.type)) {
         fetchSlots();
+        // Refresh QR immediately after a slot change so next user gets fresh code
+        if (msg.type === 'slot_reserved') {
+            refreshEntryQR();
+        }
     }
     else if (msg.type === 'gate_opened') updateGateStatus(true);
     else if (msg.type === 'gate_closed') updateGateStatus(false);
